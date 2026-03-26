@@ -663,7 +663,9 @@ elif page == "☁️ Word Cloud":
     if all_text.strip():
         st.subheader("All time")
         buf = generate_wordcloud(all_text)
-        st.image(buf, use_container_width=True)
+        col_wc, _ = st.columns([2, 1])
+        with col_wc:
+            st.image(buf)
     else:
         st.info("No contribution titles available for word cloud.")
 
@@ -677,7 +679,9 @@ elif page == "☁️ Word Cloud":
 
     if year_text.strip():
         buf = generate_wordcloud(year_text)
-        st.image(buf, use_container_width=True)
+        col_wc2, _ = st.columns([2, 1])
+        with col_wc2:
+            st.image(buf)
         st.caption(f"{len(year_titles)} contributions in {selected_year}")
     else:
         st.info(f"No contribution titles available for {selected_year}.")
