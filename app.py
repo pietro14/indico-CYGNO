@@ -200,7 +200,7 @@ if page == "📋 Meeting Browser":
             categories = sorted(df["category"].dropna().unique())
             cat_filter = st.multiselect("Category", categories)
 
-        only_pdf = st.checkbox("Show only contributions with PDF", key="browser_pdf")
+        only_pdf = st.checkbox("Show only contributions with PDF", value=True, key="browser_pdf")
 
     filtered = df.copy()
 
@@ -244,7 +244,7 @@ if page == "📋 Meeting Browser":
         display_df,
         column_config={
             "Agenda": st.column_config.LinkColumn("Agenda", display_text="Open"),
-            "PDF": st.column_config.LinkColumn("PDF", display_text="Download"),
+            "PDF": st.column_config.LinkColumn("PDF", display_text="📄 View"),
         },
         use_container_width=True,
         hide_index=True,
@@ -465,7 +465,7 @@ elif page == "👤 Speakers":
 
     # Contributions table
     st.subheader("Contributions")
-    only_pdf_speaker = st.checkbox("Show only contributions with PDF", key="speaker_pdf")
+    only_pdf_speaker = st.checkbox("Show only contributions with PDF", value=True, key="speaker_pdf")
     display_speaker = speaker_df.copy()
     if only_pdf_speaker:
         display_speaker = display_speaker[display_speaker["pdf"].notna()]
@@ -477,7 +477,7 @@ elif page == "👤 Speakers":
         display,
         column_config={
             "Agenda": st.column_config.LinkColumn("Agenda", display_text="Open"),
-            "PDF": st.column_config.LinkColumn("PDF", display_text="Download"),
+            "PDF": st.column_config.LinkColumn("PDF", display_text="📄 View"),
         },
         use_container_width=True,
         hide_index=True,
@@ -535,7 +535,7 @@ elif page == "🏛️ Institutions":
 
     # Contributions table
     st.subheader("All contributions")
-    only_pdf_inst = st.checkbox("Show only contributions with PDF", key="inst_pdf")
+    only_pdf_inst = st.checkbox("Show only contributions with PDF", value=True, key="inst_pdf")
     display_inst = inst_df.copy()
     if only_pdf_inst:
         display_inst = display_inst[display_inst["pdf"].notna()]
@@ -547,7 +547,7 @@ elif page == "🏛️ Institutions":
         display,
         column_config={
             "Agenda": st.column_config.LinkColumn("Agenda", display_text="Open"),
-            "PDF": st.column_config.LinkColumn("PDF", display_text="Download"),
+            "PDF": st.column_config.LinkColumn("PDF", display_text="📄 View"),
         },
         use_container_width=True,
         hide_index=True,
