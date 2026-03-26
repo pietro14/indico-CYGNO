@@ -265,7 +265,7 @@ st.sidebar.metric("Total meetings (past)", meeting_count)
 st.sidebar.markdown("---")
 page = st.sidebar.radio(
     "Navigate",
-    ["📋 Meeting Browser", "📊 Analytics", "🔗 Collaboration Network",
+    ["📋 Contributions Browser", "📊 Analytics", "🔗 Collaboration Network",
      "☁️ Word Cloud", "👤 Speakers", "🏛️ Institutions"],
 )
 
@@ -280,8 +280,8 @@ if df.empty:
 # ====================================================================
 # PAGE: Meeting Browser
 # ====================================================================
-if page == "📋 Meeting Browser":
-    st.header("Meeting Browser")
+if page == "📋 Contributions Browser":
+    st.header("Contributions Browser")
 
     with st.expander("🔍 Filters", expanded=True):
         # Quick date presets
@@ -553,33 +553,17 @@ elif page == "📊 Analytics":
         fig.update_layout(margin=dict(t=10, b=10), height=500)
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Row 6: Contribution trends + PDF availability ---
-    col9, col10 = st.columns(2)
-
-    with col9:
-        st.subheader("Contribution trends")
-        granularity = st.radio("Group by", ["Month", "Year"], horizontal=True, key="trend_gran")
-        if granularity == "Month":
-            trend = df_valid.groupby("month").size().reset_index(name="contributions")
-            fig = px.line(trend, x="month", y="contributions", labels={"month": "", "contributions": "Contributions"})
-        else:
-            trend = df_valid.groupby("year").size().reset_index(name="contributions")
-            fig = px.line(trend, x="year", y="contributions", labels={"year": "", "contributions": "Contributions"})
-        fig.update_layout(margin=dict(t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col10:
-        st.subheader("PDF availability")
-        has_pdf = df["pdf"].notna()
-        pdf_stats = pd.DataFrame({
-            "status": ["Has PDF", "No PDF"],
-            "count": [has_pdf.sum(), (~has_pdf).sum()],
-        })
-        fig = px.pie(pdf_stats, values="count", names="status",
-                     color="status", color_discrete_map={"Has PDF": "#2ecc71", "No PDF": "#e74c3c"},
-                     hole=0.3)
-        fig.update_layout(margin=dict(t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
+    # --- Row 6: Contribution trends ---
+    st.subheader("Contribution trends")
+    granularity = st.radio("Group by", ["Month", "Year"], horizontal=True, key="trend_gran")
+    if granularity == "Month":
+        trend = df_valid.groupby("month").size().reset_index(name="contributions")
+        fig = px.line(trend, x="month", y="contributions", labels={"month": "", "contributions": "Contributions"})
+    else:
+        trend = df_valid.groupby("year").size().reset_index(name="contributions")
+        fig = px.line(trend, x="year", y="contributions", labels={"year": "", "contributions": "Contributions"})
+    fig.update_layout(margin=dict(t=10, b=10))
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ====================================================================
