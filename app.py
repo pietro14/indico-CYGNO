@@ -200,6 +200,8 @@ if page == "📋 Meeting Browser":
             categories = sorted(df["category"].dropna().unique())
             cat_filter = st.multiselect("Category", categories)
 
+        only_pdf = st.checkbox("Show only contributions with PDF", key="browser_pdf")
+
     filtered = df.copy()
 
     if date_range and len(date_range) == 2:
@@ -221,6 +223,8 @@ if page == "📋 Meeting Browser":
         filtered = filtered[filtered["institution"].isin(inst_filter)]
     if cat_filter:
         filtered = filtered[filtered["category"].isin(cat_filter)]
+    if only_pdf:
+        filtered = filtered[filtered["pdf"].notna()]
 
     st.caption(f"{len(filtered)} contributions across {filtered['agenda'].nunique()} meetings")
 
@@ -461,7 +465,11 @@ elif page == "👤 Speakers":
 
     # Contributions table
     st.subheader("Contributions")
-    display = speaker_df[["date", "category", "meeting", "contribution", "institution", "agenda", "pdf"]].rename(columns={
+    only_pdf_speaker = st.checkbox("Show only contributions with PDF", key="speaker_pdf")
+    display_speaker = speaker_df.copy()
+    if only_pdf_speaker:
+        display_speaker = display_speaker[display_speaker["pdf"].notna()]
+    display = display_speaker[["date", "category", "meeting", "contribution", "institution", "agenda", "pdf"]].rename(columns={
         "date": "Date", "category": "Category", "meeting": "Meeting", "contribution": "Contribution",
         "institution": "Institution", "agenda": "Agenda", "pdf": "PDF",
     })
@@ -527,7 +535,11 @@ elif page == "🏛️ Institutions":
 
     # Contributions table
     st.subheader("All contributions")
-    display = inst_df[["date", "category", "meeting", "contribution", "speaker", "agenda", "pdf"]].rename(columns={
+    only_pdf_inst = st.checkbox("Show only contributions with PDF", key="inst_pdf")
+    display_inst = inst_df.copy()
+    if only_pdf_inst:
+        display_inst = display_inst[display_inst["pdf"].notna()]
+    display = display_inst[["date", "category", "meeting", "contribution", "speaker", "agenda", "pdf"]].rename(columns={
         "date": "Date", "category": "Category", "meeting": "Meeting", "contribution": "Contribution",
         "speaker": "Speaker", "agenda": "Agenda", "pdf": "PDF",
     })
