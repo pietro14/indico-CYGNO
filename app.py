@@ -95,6 +95,8 @@ def load_data():
         df = df[df["date_parsed"] <= now].copy()
         # Normalize institutions
         df["institution"] = df["institution"].apply(normalize_institution)
+        # Clean PDF column: replace "no PDF" and empty strings with None for proper link rendering
+        df["pdf"] = df["pdf"].replace({"no PDF": None, "": None})
     return df
 
 
@@ -409,7 +411,7 @@ elif page == "📊 Analytics":
 
     # --- Row 6: PDF availability ---
     st.subheader("PDF availability")
-    has_pdf = (df["pdf"] != "no PDF") & (df["pdf"].str.len() > 0)
+    has_pdf = df["pdf"].notna()
     pdf_stats = pd.DataFrame({
         "status": ["Has PDF", "No PDF"],
         "count": [has_pdf.sum(), (~has_pdf).sum()],
@@ -491,14 +493,16 @@ elif page == "👤 Speakers":
 elif page == "🏛️ Institutions":
     st.header("Institution Profiles")
 
-    inst_list = sorted(
-        df[df["institution"].notna() & (df["institution"] != "N/A") & (df["institution"] != "")]["institution"].unique()
-    )
-    if not inst_list:
+    valid_insts = df[df["institution"].notna() & (df["institution"] != "N/A") & (df["institution"] != "")]
+    if valid_insts.empty:
         st.info("No institution data available.")
         st.stop()
 
-    selected_inst = st.selectbox("Select an institution", inst_list)
+    # Default to institution with most contributions
+    inst_counts = valid_insts.groupby("institution").size().sort_values(ascending=False)
+    inst_list = inst_counts.index.tolist()
+
+    selected_inst = st.selectbox("Select an institution", inst_list, index=0)
     inst_df = df[df["institution"] == selected_inst].copy()
 
     # Stats
