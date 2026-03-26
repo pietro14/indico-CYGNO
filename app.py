@@ -5,6 +5,7 @@ Visualize, filter, and analyze CYGNO collaboration meetings.
 
 import os
 import sqlite3
+from datetime import datetime
 
 import pandas as pd
 import plotly.express as px
@@ -18,6 +19,48 @@ st.set_page_config(
     page_icon="🔬",
     layout="wide",
 )
+
+# --- Institution normalization map ---
+INSTITUTION_MAP = {
+    # GSSI & INFN LNGS
+    "GSSI & INFN": "GSSI & INFN LNGS",
+    "GSSI and INFN LNGS": "GSSI & INFN LNGS",
+    "Gran Sasso Science Institute": "GSSI & INFN LNGS",
+    "Gran Sasso Science Institute / INFN": "GSSI & INFN LNGS",
+    "Gran Sasso Science Institute / Istituto Nazionale di Fisica Nucleare LNGS": "GSSI & INFN LNGS",
+    "Istituto Nazionale di Fisica Nucleare, GSSI": "GSSI & INFN LNGS",
+    # INFN (generic)
+    "Istituto Nazionale di Fisica Nucleare": "INFN",
+    # INFN LNF
+    "INFN - LNF": "INFN - LNF (Frascati)",
+    "LNF": "INFN - LNF (Frascati)",
+    "Laboratori Nazionali di Frascati": "INFN - LNF (Frascati)",
+    # Sapienza & INFN Roma
+    "INFN Roma": "Sapienza & INFN Roma",
+    "RM1": "Sapienza & INFN Roma",
+    "ROMA1": "Sapienza & INFN Roma",
+    "Sapienza": "Sapienza & INFN Roma",
+    "Sapienza & INFN Roma": "Sapienza & INFN Roma",
+    "Sapienza Università di Roma": "Sapienza & INFN Roma",
+    "Sapienza Università di Roma, INFN Roma1": "Sapienza & INFN Roma",
+    "La Sapienza Università di Roma": "Sapienza & INFN Roma",
+    # Roma Tre
+    "ROMA3": "Università Roma Tre & INFN",
+    "Roma Tre University, INFN Roma Tre": "Università Roma Tre & INFN",
+    "Università Roma Tre": "Università Roma Tre & INFN",
+    "Università degli Studi Roma Tre": "Università Roma Tre & INFN",
+    # University of Coimbra / LIP
+    "Universidade de Coimbra": "University of Coimbra",
+    "LIBPhys-UC, Department of Physics, University of Coimbra": "University of Coimbra",
+    "Laboratório de Instrumentação e Física Experimental de Partículas": "LIP",
+    "Laboratory for Instrumentation, Biomedical Engineering and Radiation Physics": "LIP",
+}
+
+
+def normalize_institution(name):
+    if pd.isna(name):
+        return name
+    return INSTITUTION_MAP.get(name, name)
 
 
 # --- Data loading ---
@@ -47,6 +90,11 @@ def load_data():
     conn.close()
     if not df.empty:
         df["date_parsed"] = pd.to_datetime(df["date"], format="%Y-%m-%d %H:%M", errors="coerce")
+        # Filter out future events
+        now = pd.Timestamp.now()
+        df = df[df["date_parsed"] <= now].copy()
+        # Normalize institutions
+        df["institution"] = df["institution"].apply(normalize_institution)
     return df
 
 
@@ -54,7 +102,7 @@ def load_meeting_count():
     if not os.path.exists(DB_PATH):
         return 0
     conn = sqlite3.connect(DB_PATH)
-    count = conn.execute("SELECT COUNT(*) FROM meetings").fetchone()[0]
+    count = conn.execute("SELECT COUNT(*) FROM meetings WHERE date <= datetime('now', 'localtime')").fetchone()[0]
     conn.close()
     return count
 
@@ -101,7 +149,7 @@ else:
     st.sidebar.caption("No data yet — click Update Data to start.")
 
 meeting_count = load_meeting_count()
-st.sidebar.metric("Total meetings", meeting_count)
+st.sidebar.metric("Total meetings (past)", meeting_count)
 
 st.sidebar.markdown("---")
 page = st.sidebar.radio(
@@ -207,6 +255,9 @@ elif page == "📊 Analytics":
     df_valid = df.dropna(subset=["date_parsed"]).copy()
     df_valid["month"] = df_valid["date_parsed"].dt.to_period("M").dt.to_timestamp()
     df_valid["year"] = df_valid["date_parsed"].dt.year
+    df_valid["day_of_week"] = df_valid["date_parsed"].dt.day_name()
+    df_valid["month_of_year"] = df_valid["date_parsed"].dt.month_name()
+    df_valid["month_num"] = df_valid["date_parsed"].dt.month
 
     # --- Row 1: Meetings over time + Meetings by category ---
     col1, col2 = st.columns(2)
@@ -236,11 +287,71 @@ elif page == "📊 Analytics":
         fig.update_layout(margin=dict(t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Row 2: Activity trends + Contributions per meeting ---
+    # --- Row 2: Day of week + Month of year distributions ---
     col3, col4 = st.columns(2)
 
     with col3:
-        st.subheader("Activity trends")
+        st.subheader("Meetings by day of the week")
+        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        meetings_by_dow = (
+            df_valid.drop_duplicates(subset=["agenda"])
+            .groupby("day_of_week")
+            .size()
+            .reindex(day_order, fill_value=0)
+            .reset_index(name="count")
+        )
+        meetings_by_dow.columns = ["day", "count"]
+        fig = px.bar(meetings_by_dow, x="day", y="count",
+                     labels={"day": "", "count": "Meetings"},
+                     color="count", color_continuous_scale="Blues")
+        fig.update_layout(margin=dict(t=10, b=10), showlegend=False, coloraxis_showscale=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col4:
+        st.subheader("Meetings by month of the year")
+        month_order = ["January", "February", "March", "April", "May", "June",
+                       "July", "August", "September", "October", "November", "December"]
+        meetings_by_moy = (
+            df_valid.drop_duplicates(subset=["agenda"])
+            .groupby("month_of_year")
+            .size()
+            .reindex(month_order, fill_value=0)
+            .reset_index(name="count")
+        )
+        meetings_by_moy.columns = ["month_name", "count"]
+        fig = px.bar(meetings_by_moy, x="month_name", y="count",
+                     labels={"month_name": "", "count": "Meetings"},
+                     color="count", color_continuous_scale="Oranges")
+        fig.update_layout(margin=dict(t=10, b=10), showlegend=False, coloraxis_showscale=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- Row 3: Activity heatmap (month x year) ---
+    st.subheader("Activity heatmap (meetings per month/year)")
+    meetings_unique = df_valid.drop_duplicates(subset=["agenda"]).copy()
+    heatmap_data = (
+        meetings_unique
+        .groupby(["year", "month_num"])
+        .size()
+        .reset_index(name="count")
+    )
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    heatmap_pivot = heatmap_data.pivot(index="year", columns="month_num", values="count").fillna(0)
+    heatmap_pivot.columns = [month_labels[int(c) - 1] for c in heatmap_pivot.columns]
+    fig = px.imshow(
+        heatmap_pivot,
+        labels=dict(x="Month", y="Year", color="Meetings"),
+        color_continuous_scale="YlOrRd",
+        aspect="auto",
+    )
+    fig.update_layout(margin=dict(t=10, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- Row 4: Activity trends + Contributions per meeting ---
+    col5, col6 = st.columns(2)
+
+    with col5:
+        st.subheader("Contribution trends")
         granularity = st.radio("Group by", ["Month", "Year"], horizontal=True, key="trend_gran")
         if granularity == "Month":
             trend = df_valid.groupby("month").size().reset_index(name="contributions")
@@ -251,7 +362,7 @@ elif page == "📊 Analytics":
         fig.update_layout(margin=dict(t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-    with col4:
+    with col6:
         st.subheader("Contributions per meeting")
         contribs_per_meeting = (
             df_valid.groupby(["agenda", "meeting", "date_parsed"])
@@ -265,10 +376,10 @@ elif page == "📊 Analytics":
         fig.update_layout(margin=dict(t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Row 3: Top speakers + Institution breakdown ---
-    col5, col6 = st.columns(2)
+    # --- Row 5: Top speakers + Institution breakdown ---
+    col7, col8 = st.columns(2)
 
-    with col5:
+    with col7:
         st.subheader("Top 20 speakers")
         speakers = (
             df[df["speaker"].notna() & (df["speaker"] != "N/A") & (df["speaker"] != "")]
@@ -282,7 +393,7 @@ elif page == "📊 Analytics":
         fig.update_layout(yaxis=dict(autorange="reversed"), margin=dict(t=10, b=10), height=500)
         st.plotly_chart(fig, use_container_width=True)
 
-    with col6:
+    with col8:
         st.subheader("Institution breakdown")
         insts = (
             df[df["institution"].notna() & (df["institution"] != "N/A") & (df["institution"] != "")]
@@ -296,15 +407,15 @@ elif page == "📊 Analytics":
         fig.update_layout(margin=dict(t=10, b=10), height=500)
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Row 4: PDF availability ---
+    # --- Row 6: PDF availability ---
     st.subheader("PDF availability")
     has_pdf = (df["pdf"] != "no PDF") & (df["pdf"].str.len() > 0)
     pdf_stats = pd.DataFrame({
         "status": ["Has PDF", "No PDF"],
         "count": [has_pdf.sum(), (~has_pdf).sum()],
     })
-    col7, col8 = st.columns([1, 2])
-    with col7:
+    col9, col10 = st.columns([1, 2])
+    with col9:
         fig = px.pie(pdf_stats, values="count", names="status",
                      color="status", color_discrete_map={"Has PDF": "#2ecc71", "No PDF": "#e74c3c"},
                      hole=0.3)
@@ -318,14 +429,18 @@ elif page == "📊 Analytics":
 elif page == "👤 Speakers":
     st.header("Speaker Profiles")
 
-    speakers_list = sorted(
-        df[df["speaker"].notna() & (df["speaker"] != "N/A") & (df["speaker"] != "")]["speaker"].unique()
-    )
-    if not speakers_list:
+    valid_speakers = df[df["speaker"].notna() & (df["speaker"] != "N/A") & (df["speaker"] != "")]
+
+    if valid_speakers.empty:
         st.info("No speaker data available.")
         st.stop()
 
-    selected_speaker = st.selectbox("Select a speaker", speakers_list)
+    # Default to the speaker with most contributions
+    speaker_counts = valid_speakers.groupby("speaker").size().sort_values(ascending=False)
+    speakers_list = speaker_counts.index.tolist()
+    default_speaker = speakers_list[0]
+
+    selected_speaker = st.selectbox("Select a speaker", speakers_list, index=0)
     speaker_df = df[df["speaker"] == selected_speaker].copy()
 
     # Stats
