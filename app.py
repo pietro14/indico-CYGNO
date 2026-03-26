@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from scraper import DB_PATH, DEFAULT_START_URL, init_db, get_meta, scrape_events
+from scraper import DB_PATH, init_db, get_meta, scrape_events
 
 # --- Page config ---
 st.set_page_config(
@@ -33,6 +33,7 @@ def load_data():
             m.title as meeting,
             m.event_url as agenda,
             m.date,
+            m.category,
             c.title as contribution,
             c.speaker,
             c.institution,
@@ -77,16 +78,15 @@ if st.sidebar.button("🔄 Update Data", use_container_width=True):
     with st.sidebar.status("Scraping Indico...", expanded=True) as status:
         info = st.sidebar.empty()
 
-        def progress_cb(msg, count):
-            info.text(f"{msg}\n({count} new events so far)")
+        def progress_cb(msg, current, total):
+            if total > 0:
+                info.text(f"{msg}\n({current}/{total})")
+            else:
+                info.text(msg)
 
         try:
             init_db(DB_PATH)
-            new_count = scrape_events(
-                db_path=DB_PATH,
-                start_url=DEFAULT_START_URL,
-                progress_callback=progress_cb,
-            )
+            new_count = scrape_events(db_path=DB_PATH, progress_callback=progress_cb)
             status.update(label=f"Done! {new_count} new event(s) added.", state="complete")
         except Exception as e:
             status.update(label=f"Error: {e}", state="error")
@@ -140,12 +140,15 @@ if page == "📋 Meeting Browser":
         with col2:
             keyword = st.text_input("Keyword search (meeting or contribution title)")
 
-        col3, col4 = st.columns(2)
+        col3, col4, col5 = st.columns(3)
         with col3:
             speaker_search = st.text_input("Speaker name")
         with col4:
             institutions = sorted(df["institution"].dropna().unique())
             inst_filter = st.multiselect("Institution", institutions)
+        with col5:
+            categories = sorted(df["category"].dropna().unique())
+            cat_filter = st.multiselect("Category", categories)
 
     filtered = df.copy()
 
@@ -166,12 +169,15 @@ if page == "📋 Meeting Browser":
         ]
     if inst_filter:
         filtered = filtered[filtered["institution"].isin(inst_filter)]
+    if cat_filter:
+        filtered = filtered[filtered["category"].isin(cat_filter)]
 
     st.caption(f"{len(filtered)} contributions across {filtered['agenda'].nunique()} meetings")
 
-    display_df = filtered[["date", "meeting", "contribution", "speaker", "institution", "agenda", "pdf"]].copy()
+    display_df = filtered[["date", "category", "meeting", "contribution", "speaker", "institution", "agenda", "pdf"]].copy()
     display_df = display_df.rename(columns={
         "date": "Date",
+        "category": "Category",
         "meeting": "Meeting",
         "contribution": "Contribution",
         "speaker": "Speaker",
@@ -202,7 +208,7 @@ elif page == "📊 Analytics":
     df_valid["month"] = df_valid["date_parsed"].dt.to_period("M").dt.to_timestamp()
     df_valid["year"] = df_valid["date_parsed"].dt.year
 
-    # --- Row 1: Meetings over time + Activity trends ---
+    # --- Row 1: Meetings over time + Meetings by category ---
     col1, col2 = st.columns(2)
 
     with col1:
@@ -218,6 +224,22 @@ elif page == "📊 Analytics":
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
+        st.subheader("Meetings by category")
+        cat_counts = (
+            df_valid.drop_duplicates(subset=["agenda"])
+            .groupby("category")
+            .size()
+            .reset_index(name="count")
+            .sort_values("count", ascending=False)
+        )
+        fig = px.pie(cat_counts, values="count", names="category", hole=0.3)
+        fig.update_layout(margin=dict(t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- Row 2: Activity trends + Contributions per meeting ---
+    col3, col4 = st.columns(2)
+
+    with col3:
         st.subheader("Activity trends")
         granularity = st.radio("Group by", ["Month", "Year"], horizontal=True, key="trend_gran")
         if granularity == "Month":
@@ -229,44 +251,10 @@ elif page == "📊 Analytics":
         fig.update_layout(margin=dict(t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Row 2: Top speakers + Institution breakdown ---
-    col3, col4 = st.columns(2)
-
-    with col3:
-        st.subheader("Top 20 speakers")
-        speakers = (
-            df[df["speaker"].notna() & (df["speaker"] != "N/A")]
-            .groupby("speaker")
-            .size()
-            .nlargest(20)
-            .reset_index(name="contributions")
-        )
-        fig = px.bar(speakers, x="contributions", y="speaker", orientation="h",
-                     labels={"speaker": "", "contributions": "Contributions"})
-        fig.update_layout(yaxis=dict(autorange="reversed"), margin=dict(t=10, b=10), height=500)
-        st.plotly_chart(fig, use_container_width=True)
-
     with col4:
-        st.subheader("Institution breakdown")
-        insts = (
-            df[df["institution"].notna() & (df["institution"] != "N/A")]
-            .groupby("institution")
-            .size()
-            .reset_index(name="contributions")
-            .sort_values("contributions", ascending=False)
-        )
-        fig = px.pie(insts.head(15), values="contributions", names="institution",
-                     hole=0.3)
-        fig.update_layout(margin=dict(t=10, b=10), height=500)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # --- Row 3: Contributions per meeting + PDF availability ---
-    col5, col6 = st.columns(2)
-
-    with col5:
         st.subheader("Contributions per meeting")
         contribs_per_meeting = (
-            df.groupby(["agenda", "meeting", "date_parsed"])
+            df_valid.groupby(["agenda", "meeting", "date_parsed"])
             .size()
             .reset_index(name="contributions")
             .sort_values("date_parsed")
@@ -277,13 +265,46 @@ elif page == "📊 Analytics":
         fig.update_layout(margin=dict(t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
+    # --- Row 3: Top speakers + Institution breakdown ---
+    col5, col6 = st.columns(2)
+
+    with col5:
+        st.subheader("Top 20 speakers")
+        speakers = (
+            df[df["speaker"].notna() & (df["speaker"] != "N/A") & (df["speaker"] != "")]
+            .groupby("speaker")
+            .size()
+            .nlargest(20)
+            .reset_index(name="contributions")
+        )
+        fig = px.bar(speakers, x="contributions", y="speaker", orientation="h",
+                     labels={"speaker": "", "contributions": "Contributions"})
+        fig.update_layout(yaxis=dict(autorange="reversed"), margin=dict(t=10, b=10), height=500)
+        st.plotly_chart(fig, use_container_width=True)
+
     with col6:
-        st.subheader("PDF availability")
-        has_pdf = (df["pdf"] != "no PDF") & (df["pdf"].str.len() > 0)
-        pdf_stats = pd.DataFrame({
-            "status": ["Has PDF", "No PDF"],
-            "count": [has_pdf.sum(), (~has_pdf).sum()],
-        })
+        st.subheader("Institution breakdown")
+        insts = (
+            df[df["institution"].notna() & (df["institution"] != "N/A") & (df["institution"] != "")]
+            .groupby("institution")
+            .size()
+            .reset_index(name="contributions")
+            .sort_values("contributions", ascending=False)
+        )
+        fig = px.pie(insts.head(15), values="contributions", names="institution",
+                     hole=0.3)
+        fig.update_layout(margin=dict(t=10, b=10), height=500)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- Row 4: PDF availability ---
+    st.subheader("PDF availability")
+    has_pdf = (df["pdf"] != "no PDF") & (df["pdf"].str.len() > 0)
+    pdf_stats = pd.DataFrame({
+        "status": ["Has PDF", "No PDF"],
+        "count": [has_pdf.sum(), (~has_pdf).sum()],
+    })
+    col7, col8 = st.columns([1, 2])
+    with col7:
         fig = px.pie(pdf_stats, values="count", names="status",
                      color="status", color_discrete_map={"Has PDF": "#2ecc71", "No PDF": "#e74c3c"},
                      hole=0.3)
@@ -298,7 +319,7 @@ elif page == "👤 Speakers":
     st.header("Speaker Profiles")
 
     speakers_list = sorted(
-        df[df["speaker"].notna() & (df["speaker"] != "N/A")]["speaker"].unique()
+        df[df["speaker"].notna() & (df["speaker"] != "N/A") & (df["speaker"] != "")]["speaker"].unique()
     )
     if not speakers_list:
         st.info("No speaker data available.")
@@ -323,8 +344,8 @@ elif page == "👤 Speakers":
 
     # Contributions table
     st.subheader("Contributions")
-    display = speaker_df[["date", "meeting", "contribution", "institution", "agenda", "pdf"]].rename(columns={
-        "date": "Date", "meeting": "Meeting", "contribution": "Contribution",
+    display = speaker_df[["date", "category", "meeting", "contribution", "institution", "agenda", "pdf"]].rename(columns={
+        "date": "Date", "category": "Category", "meeting": "Meeting", "contribution": "Contribution",
         "institution": "Institution", "agenda": "Agenda", "pdf": "PDF",
     })
     st.dataframe(
@@ -356,7 +377,7 @@ elif page == "🏛️ Institutions":
     st.header("Institution Profiles")
 
     inst_list = sorted(
-        df[df["institution"].notna() & (df["institution"] != "N/A")]["institution"].unique()
+        df[df["institution"].notna() & (df["institution"] != "N/A") & (df["institution"] != "")]["institution"].unique()
     )
     if not inst_list:
         st.info("No institution data available.")
@@ -374,7 +395,7 @@ elif page == "🏛️ Institutions":
     # Per-speaker breakdown
     st.subheader("Speakers from this institution")
     by_speaker = (
-        inst_df[inst_df["speaker"] != "N/A"]
+        inst_df[(inst_df["speaker"] != "N/A") & (inst_df["speaker"] != "")]
         .groupby("speaker")
         .size()
         .reset_index(name="contributions")
@@ -387,8 +408,8 @@ elif page == "🏛️ Institutions":
 
     # Contributions table
     st.subheader("All contributions")
-    display = inst_df[["date", "meeting", "contribution", "speaker", "agenda", "pdf"]].rename(columns={
-        "date": "Date", "meeting": "Meeting", "contribution": "Contribution",
+    display = inst_df[["date", "category", "meeting", "contribution", "speaker", "agenda", "pdf"]].rename(columns={
+        "date": "Date", "category": "Category", "meeting": "Meeting", "contribution": "Contribution",
         "speaker": "Speaker", "agenda": "Agenda", "pdf": "PDF",
     })
     st.dataframe(

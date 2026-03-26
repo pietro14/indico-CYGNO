@@ -1,47 +1,27 @@
 """
-CYGNO Indico Scraper — adapted from indico2csv.py
-Scrapes CYGNO collaboration meetings from agenda.infn.it,
-stores data in SQLite with incremental update support.
+CYGNO Indico Scraper — uses the Indico JSON API
+Fetches all CYGNO meetings from agenda.infn.it category 1149
+(including all subcategories), stores data in SQLite.
+Supports incremental updates.
 """
 
 import os
-import re
 import sqlite3
+import time
 from datetime import datetime
 
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
+import requests
 
 BASE_URL = "https://agenda.infn.it"
-DEFAULT_START_URL = "https://agenda.infn.it/event/44949/"
+CATEGORY_ID = 1149
+CATEGORY_API = f"{BASE_URL}/export/categ/{CATEGORY_ID}.json"
+EVENT_API = f"{BASE_URL}/export/event/{{event_id}}.json"
+
 DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 DB_PATH = os.path.join(DB_DIR, "cygno_meetings.db")
 
-
-# --- Helpers (from original indico2csv.py) ---
-
-def remove_parentheses_content(text):
-    return re.sub(r"\(.*?\)", "", text).strip()
-
-
-def format_date(date_str):
-    date_str_cleaned = " ".join(date_str.split())
-    date_formats = [
-        "%A %b %d, %Y, %I:%M %p",
-        "%b %d, %Y, %I:%M %p",
-    ]
-    for fmt in date_formats:
-        try:
-            dt = datetime.strptime(date_str_cleaned, fmt)
-            return dt.strftime("%Y-%m-%d %H:%M")
-        except ValueError:
-            pass
-    return date_str_cleaned
+# Rate limiting: pause between API calls to be polite
+REQUEST_DELAY = 0.3  # seconds
 
 
 # --- Database ---
@@ -55,7 +35,8 @@ def init_db(db_path=DB_PATH):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_url TEXT UNIQUE NOT NULL,
             title TEXT NOT NULL,
-            date TEXT NOT NULL
+            date TEXT NOT NULL,
+            category TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS contributions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,10 +63,10 @@ def event_exists(conn, event_url):
     return row is not None
 
 
-def insert_event(conn, event_url, title, date, contributions):
+def insert_event(conn, event_url, title, date, category, contributions):
     cur = conn.execute(
-        "INSERT OR IGNORE INTO meetings (event_url, title, date) VALUES (?, ?, ?)",
-        (event_url, title, date),
+        "INSERT OR IGNORE INTO meetings (event_url, title, date, category) VALUES (?, ?, ?, ?)",
+        (event_url, title, date, category),
     )
     if cur.rowcount == 0:
         return False
@@ -112,141 +93,161 @@ def set_meta(conn, key, value):
     conn.commit()
 
 
-# --- Selenium ---
+# --- API Fetching ---
 
-def create_driver():
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=options)
-
-
-# --- Parsing ---
-
-def parse_single_event(soup, event_url):
-    title_el = soup.find("h1", itemprop="name")
-    event_title = title_el.get_text(strip=True).replace("¶", "") if title_el else "Untitled"
-
-    date_el = soup.find("time", itemprop="startDate")
-    event_date = format_date(date_el.get_text(strip=True)) if date_el else ""
-
-    contributions = []
-    entries = soup.find_all("li", class_="timetable-item timetable-contrib")
-
-    if not entries:
-        contributions.append({
-            "title": "",
-            "speaker": "",
-            "institution": "",
-            "pdf_url": "",
-        })
-    else:
-        for entry in entries:
-            ctitle_el = entry.find("span", class_="timetable-title")
-            ctitle = ctitle_el.get_text(strip=True).replace("¶", "") if ctitle_el else ""
-
-            speaker = "N/A"
-            institution = "N/A"
-            speaker_el = entry.find("div", class_="speaker-list")
-            if speaker_el:
-                spans = speaker_el.find_all("span")
-                if len(spans) > 1:
-                    speaker = remove_parentheses_content(spans[1].get_text(strip=True))
-                inst_el = speaker_el.find("span", class_="affiliation")
-                if inst_el:
-                    institution = inst_el.get_text(strip=True).replace("(", "").replace(")", "")
-
-            pdf_url = "no PDF"
-            pdf_el = entry.find("div", class_="js-attachment-container")
-            if pdf_el:
-                anchor = pdf_el.find("a", href=True)
-                if anchor and anchor["href"].endswith(".pdf"):
-                    pdf_url = BASE_URL + anchor["href"]
-
-            contributions.append({
-                "title": ctitle,
-                "speaker": speaker,
-                "institution": institution,
-                "pdf_url": pdf_url,
-            })
-
-    return {
-        "title": event_title,
-        "date": event_date,
-        "event_url": event_url,
-        "contributions": contributions,
+def fetch_category_events():
+    """Fetch all events in the CYGNO category (including subcategories)."""
+    params = {
+        "from": "2018-01-01",
+        "to": "2027-12-31",
+        "limit": "1000",
     }
+    resp = requests.get(CATEGORY_API, params=params, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("results", [])
 
 
-def find_older_event_link(soup):
-    link = soup.find("a", class_="icon-prev", href=True)
-    if link:
-        return BASE_URL + link["href"]
-    return None
+def fetch_event_contributions(event_id):
+    """Fetch detailed contribution data for a single event."""
+    url = EVENT_API.format(event_id=event_id)
+    params = {"detail": "contributions"}
+    resp = requests.get(url, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    results = data.get("results", [])
+    if not results:
+        return []
+    event = results[0]
+    return event.get("contributions", [])
 
 
-# --- Main scrape loop ---
+def parse_contributions(raw_contributions):
+    """Parse contribution JSON into our format."""
+    contributions = []
+    for c in raw_contributions:
+        title = c.get("title", "")
 
-def scrape_events(db_path=DB_PATH, start_url=DEFAULT_START_URL, progress_callback=None):
+        # Speakers
+        speakers = c.get("speakers", [])
+        if speakers:
+            speaker_name = speakers[0].get("first_name", "") + " " + speakers[0].get("last_name", "")
+            speaker_name = speaker_name.strip()
+            institution = speakers[0].get("affiliation", "N/A")
+        else:
+            speaker_name = "N/A"
+            institution = "N/A"
+
+        # PDF: look through folders -> attachments
+        pdf_url = "no PDF"
+        for folder in c.get("folders", []):
+            for att in folder.get("attachments", []):
+                if att.get("filename", "").lower().endswith(".pdf"):
+                    pdf_url = att.get("download_url", "no PDF")
+                    break
+            if pdf_url != "no PDF":
+                break
+
+        contributions.append({
+            "title": title,
+            "speaker": speaker_name,
+            "institution": institution,
+            "pdf_url": pdf_url,
+        })
+
+    return contributions
+
+
+def get_event_category(event_data):
+    """Extract the most specific category name from categoryPath."""
+    path = event_data.get("categoryPath", [])
+    if path:
+        return path[-1].get("name", "CYGNO")
+    return event_data.get("category", "CYGNO")
+
+
+# --- Main scrape ---
+
+def scrape_events(db_path=DB_PATH, progress_callback=None):
     conn = init_db(db_path)
-    driver = create_driver()
     new_count = 0
 
     try:
-        current_url = start_url
-        while current_url:
+        if progress_callback:
+            progress_callback("Fetching event list from Indico API...", 0, 0)
+
+        all_events = fetch_category_events()
+        total = len(all_events)
+
+        if progress_callback:
+            progress_callback(f"Found {total} events. Checking for new ones...", 0, total)
+
+        # Filter to only new events
+        new_events = []
+        for ev in all_events:
+            url = ev.get("url", "")
+            if url and not event_exists(conn, url):
+                new_events.append(ev)
+
+        if progress_callback:
+            progress_callback(f"{len(new_events)} new events to fetch.", 0, len(new_events))
+
+        for i, ev in enumerate(new_events):
+            event_id = ev.get("id", "")
+            event_url = ev.get("url", "")
+            event_title = ev.get("title", "Untitled")
+            category = get_event_category(ev)
+
+            # Format date
+            start = ev.get("startDate", {})
+            event_date = f"{start.get('date', '')} {start.get('time', '')[:5]}"
+
             if progress_callback:
-                progress_callback(f"Loading {current_url}", new_count)
+                progress_callback(
+                    f"Fetching [{i+1}/{len(new_events)}]: {event_title[:50]}",
+                    i + 1,
+                    len(new_events),
+                )
 
-            driver.get(current_url)
-            WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
+            # Fetch contributions
+            try:
+                raw_contribs = fetch_event_contributions(event_id)
+                contributions = parse_contributions(raw_contribs)
+            except Exception as e:
+                print(f"  Warning: failed to fetch contributions for event {event_id}: {e}")
+                contributions = []
 
-            actual_url = driver.current_url
+            # If no contributions, still store the event with an empty contribution
+            if not contributions:
+                contributions = [{
+                    "title": "",
+                    "speaker": "",
+                    "institution": "",
+                    "pdf_url": "",
+                }]
 
-            # Incremental: stop if we already have this event
-            if event_exists(conn, actual_url):
-                if progress_callback:
-                    progress_callback("Reached already-scraped events, stopping.", new_count)
-                break
-
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            event_data = parse_single_event(soup, actual_url)
-
-            inserted = insert_event(
-                conn,
-                event_data["event_url"],
-                event_data["title"],
-                event_data["date"],
-                event_data["contributions"],
-            )
+            inserted = insert_event(conn, event_url, event_title, event_date, category, contributions)
             if inserted:
                 new_count += 1
 
-            current_url = find_older_event_link(soup)
+            time.sleep(REQUEST_DELAY)
 
         # Update metadata
         set_meta(conn, "last_scrape_timestamp", datetime.now().isoformat())
-        set_meta(conn, "start_url", start_url)
 
     except Exception as e:
         print(f"Scrape error: {e}")
         raise
     finally:
-        driver.quit()
         conn.close()
 
     return new_count
 
 
 if __name__ == "__main__":
-    def _progress(msg, count):
-        print(f"  [{count} new] {msg}")
+    def _progress(msg, current, total):
+        print(f"  [{current}/{total}] {msg}")
 
-    print("Starting CYGNO Indico scraper...")
+    print("Starting CYGNO Indico scraper (JSON API)...")
     n = scrape_events(progress_callback=_progress)
     print(f"Done. {n} new events scraped.")
